@@ -357,7 +357,7 @@ class SparqlRouter(APIRouter):
                 body = query_body.decode("utf-8")
                 parsed_query = parse.parse_qsl(body)
                 for params in parsed_query:
-                    if params[0] == "query":
+                    if params[0] in ["query", "update"]:
                         query = parse.unquote(params[1])
             return await sparql_endpoint(request, query)
 
