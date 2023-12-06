@@ -211,14 +211,24 @@ class SparqlRouter(APIRouter):
             description=self.example_markdown,
             responses=api_responses,
         )
-        async def sparql_endpoint(request: Request, query: Optional[str] = Query(None)) -> Response:
+        async def sparql_endpoint(
+            request: Request,
+            query: Optional[str] = Query(None),
+            update: Optional[str] = Query(None)
+        ) -> Response:
             """
             Send a SPARQL query to be executed through HTTP GET operation.
 
             :param request: The HTTP GET request
             :param query: SPARQL query input.
             """
-            if not query:
+            if query and update:
+                return JSONResponse(
+                    status_code=400,
+                    content={"message": "Cannot do both query and update"},
+                )
+
+            if not query and not update:
                 if str(request.headers["accept"]).startswith("text/html"):
                     return self.serve_yasgui()
                 # If not asking HTML, return the SPARQL endpoint service description
@@ -245,13 +255,10 @@ class SparqlRouter(APIRouter):
             graph_ns = dict(self.graph.namespaces())
 
             try:
-                try:
-                    # Query the graph with the custom functions loaded
-                    parsed_query = prepareQuery(query, initNs=graph_ns)
-                    query_operation = re.sub(r"(\w)([A-Z])", r"\1 \2", parsed_query.algebra.name)
-                except ParseException:
-                    parsed_query = prepareUpdate(query, initNs=graph_ns)
-                    query_operation = "Update"
+                parsed_query = (
+                    prepareQuery(query, initNs=graph_ns) if query 
+                    else prepareUpdate(update, initNs=graph_ns)
+                )
             except Exception as e:
                 logging.error("Error parsing the SPARQL query: " + str(e))
                 return JSONResponse(
@@ -261,7 +268,7 @@ class SparqlRouter(APIRouter):
 
             if isinstance(parsed_query, sparql.Query):
                 try:
-                    query_results = self.graph.query(query, processor=self.processor)
+                    query_results = self.graph.query(parsed_query, processor=self.processor)
 
                     # Format and return results depending on Accept mime type in request header
                     mime_types = parse_accept_header(request.headers.get("accept", DEFAULT_CONTENT_TYPE))
@@ -274,6 +281,8 @@ class SparqlRouter(APIRouter):
                             output_mime_type = mime_type
                             # Use the first mime_type that matches
                             break
+
+                    query_operation = re.sub(r"(\w)([A-Z])", r"\1 \2", parsed_query.algebra.name)
 
                     # Handle mime type for construct queries
                     if query_operation == "Construct Query":
@@ -323,7 +332,7 @@ class SparqlRouter(APIRouter):
                             content={"message": "Invalid API KEY."}
                 )
                 try:
-                    self.graph.update(query, processor=self.processor)
+                    self.graph.update(parsed_query, processor=self.processor)
                     return Response(status_code=204)
                 except Exception as e:
                     logging.error("Error executing the SPARQL update on the RDFLib Graph: " + str(e))
@@ -345,21 +354,21 @@ class SparqlRouter(APIRouter):
             description=self.example_markdown,
             responses=api_responses,
         )
-        async def post_sparql_endpoint(request: Request, query: Optional[str] = Query(None)) -> Response:
+        async def post_sparql_endpoint(request: Request) -> Response:
             """Send a SPARQL query to be executed through HTTP POST operation.
 
             :param request: The HTTP POST request with a .body()
-            :param query: SPARQL query input.
             """
-            if not query:
-                # Handle federated query services which provide the query in the body
-                query_body = await request.body()
-                body = query_body.decode("utf-8")
-                parsed_query = parse.parse_qsl(body)
-                for params in parsed_query:
-                    if params[0] in ["query", "update"]:
-                        query = parse.unquote(params[1])
-            return await sparql_endpoint(request, query)
+            # Handle federated query services which provide the query in the body
+            request_body = await request.body()
+            body = request_body.decode("utf-8")
+            request_params = parse.parse_qsl(body)
+            query = [kvp[1] for kvp in request_params if kvp[0] == "query"]
+            update = [kvp[1] for kvp in request_params if kvp[0] == "update"]
+            return await sparql_endpoint(
+                request,
+                parse.unquote(query[0]) if query else None,
+                parse.unquote(update[0]) if update else None)
 
     def eval_custom_functions(self, ctx: QueryContext, part: CompValue) -> List[Any]:
         """Retrieve variables from a SPARQL-query, then execute registered SPARQL functions
