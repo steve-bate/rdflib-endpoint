@@ -18,6 +18,8 @@ fastapi = "*"
 uvicorn = "*"
 exceptiongroup = "^1.2.0"
 
+[tool.poetry.scripts]
+rdflib-endpoint = "rdflib_endpoint.__main__:cli"
 
 [build-system]
 requires = ["poetry-core"]
